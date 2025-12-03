@@ -188,7 +188,7 @@ class PCControl:
                             '-o', 'StrictHostKeyChecking=no', 
                             '-l', self.ssh_user, 
                             self.host, 
-                            'shutdown.exe /s /t 0'
+                            'sudo', 'shutdown', '-h', 'now'
                         ]
                         subprocess.run(cmd, check=True, capture_output=True)
                         st.toast("Shutdown Command Sent!")

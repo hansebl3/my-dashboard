@@ -9,7 +9,7 @@
     "devices": [
         {
             "name": "2080ti",
-            "host": "2080ti",
+            "host": "100.65.53.9",
             "mac": "2C:F0:5D:2C:02:36",
             "ssh_user": "ross"
         }
