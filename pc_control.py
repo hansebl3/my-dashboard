@@ -186,6 +186,8 @@ class PCControl:
                         cmd = [
                             'ssh', 
                             '-o', 'StrictHostKeyChecking=no', 
+                            '-o', 'UserKnownHostsFile=/dev/null',
+                            '-o', 'ConnectTimeout=5',
                             '-l', self.ssh_user, 
                             self.host, 
                             'sudo', 'shutdown', '-h', 'now'
@@ -198,7 +200,8 @@ class PCControl:
                         st.session_state[self.key_last_check] = 0
                         st.rerun()
                     except subprocess.CalledProcessError as e:
-                        st.error(f"Failed: {e}")
+                        error_msg = e.stderr.decode().strip() if e.stderr else str(e)
+                        st.error(f"Failed: {error_msg}")
                     except Exception as e:
                         st.error(f"Failed: {e}")
                 else:
