@@ -3,6 +3,8 @@ import subprocess
 import time
 import json
 import os
+import socket
+import struct
 
 STATE_FILE = "pc_state.json"
 
@@ -92,6 +94,25 @@ class PCControl:
         except subprocess.CalledProcessError:
             return False
 
+    def send_magic_packet(self):
+        """Native Python implementation of Wake-on-LAN"""
+        try:
+            # MAC 주소에서 구분자 제거
+            mac_address = self.mac.replace(":", "").replace("-", "")
+            if len(mac_address) != 12:
+                raise ValueError("Invalid MAC address format")
+
+            # 매직 패킷 생성: FF * 6 + MAC * 16
+            data = bytes.fromhex("FF" * 6 + mac_address * 16)
+            
+            # 브로드캐스트로 패킷 전송
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                sock.sendto(data, ("255.255.255.255", 9))
+            return True
+        except Exception as e:
+            raise e
+
     @st.fragment(run_every=2)
     def render_ui(self):
         # 1. 영구 상태 로드 (파일)
@@ -166,7 +187,7 @@ class PCControl:
             btn_type = "secondary" if is_online else "primary"
             if st.button(f'⚡ Power ON (WOL)', key=f"{self.name}_on", type=btn_type, use_container_width=True, disabled=is_disabled):
                 try:
-                    subprocess.run(['wakeonlan', self.mac], check=True, capture_output=True)
+                    self.send_magic_packet()
                     st.toast("WOL Packet Sent! Waiting for boot...", icon="🚀")
                     # 부팅 모드 진입
                     self._update_state("booting", time.time())
