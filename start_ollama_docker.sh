@@ -15,6 +15,14 @@ else
       -p $PORT:11434 \
       -v ollama_docker_isolate:/root/.ollama \
       --name $CONTAINER_NAME \
+      --cpus=4 \
+      --cpuset-cpus="0-3" \
+      --memory=12g \
+      -e OLLAMA_NUM_PARALLEL=1 \
+      -e OLLAMA_MAX_LOADED_MODELS=1 \
+      -e OLLAMA_FLASH_ATTENTION=1 \
+      -e OLLAMA_KEEP_ALIVE=5m \
+      -e OLLAMA_LLM_LIBRARY=llama-cpp \
       ollama/ollama
 fi
 

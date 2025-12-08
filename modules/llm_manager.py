@@ -108,7 +108,8 @@ class LLMManager:
             payload = {
                 "model": model,
                 "prompt": prompt,
-                "stream": stream
+                "stream": stream,
+                "context": [] # Force statelessness to prevent slowdown
             }
             logger.info(f"Sending request to Ollama ({self.current_host}): {model}")
             
