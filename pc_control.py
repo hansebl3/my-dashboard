@@ -209,6 +209,7 @@ class PCControl:
                             '-o', 'StrictHostKeyChecking=no', 
                             '-o', 'UserKnownHostsFile=/dev/null',
                             '-o', 'ConnectTimeout=5',
+                            '-i', '/home/ross/.ssh/id_ed25519',
                             '-l', self.ssh_user, 
                             self.host, 
                             'sudo', 'shutdown', '-h', 'now'

@@ -6,7 +6,7 @@ import os
 # 페이지 설정
 st.set_page_config(page_title="Ross Dashboard", layout="centered")
 
-st.title("🖥️ Ross Dashboard")
+st.title("🖥️ Ross Dashboard!!")
 
 # CSS 스타일 로드
 PCControl.load_css()

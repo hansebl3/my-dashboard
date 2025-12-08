@@ -1,3 +1,8 @@
 streamlit
 pandas
 numpy
+mysql-connector-python
+feedparser
+beautifulsoup4
+openai
+requests

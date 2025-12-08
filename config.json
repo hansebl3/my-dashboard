@@ -13,5 +13,12 @@
             "mac": "2C:F0:5D:2C:02:36",
             "ssh_user": "ross"
         }
-    ]
+    ],
+    "news_db": {
+        "host": "ross-server",
+        "user": "root",
+        "password": "lavita!978",
+        "database": "news_db"
+    },
+    "openai_api_key": ""
 }
