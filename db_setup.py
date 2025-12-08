@@ -18,7 +18,7 @@ def setup_database():
         logger.error("DB Config not found in config.json")
         return
 
-    # Connect to MySQL server (without specifying DB first to create it)
+    # MySQL 서버 연결 (미리 DB를 생성하기 위해 DB 지정 없이 연결)
     try:
         conn = mysql.connector.connect(
             host=db_config['host'],
@@ -27,15 +27,15 @@ def setup_database():
         )
         cursor = conn.cursor()
         
-        # Create Database if not exists
+        # 데이터베이스가 없으면 생성
         db_name = db_config['database']
         cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
         logger.info(f"Database '{db_name}' check/creation completed.")
         
-        # Connect to the specific database
+        # 특정 데이터베이스에 연결
         conn.database = db_name
         
-        # Create Table
+        # 테이블 생성
         create_table_query = """
         CREATE TABLE IF NOT EXISTS tb_news (
             id INT AUTO_INCREMENT PRIMARY KEY,

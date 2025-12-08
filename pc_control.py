@@ -95,7 +95,7 @@ class PCControl:
             return False
 
     def send_magic_packet(self):
-        """Native Python implementation of Wake-on-LAN"""
+        """Wake-on-LAN의 순수 파이썬 구현"""
         try:
             # MAC 주소에서 구분자 제거
             mac_address = self.mac.replace(":", "").replace("-", "")
@@ -203,7 +203,7 @@ class PCControl:
             if st.button(f'🛑 Power OFF (SSH)', key=f"{self.name}_off", type=btn_type, use_container_width=True, disabled=is_disabled):
                 if is_online:
                     try:
-                        # SSH Shutdown
+                        # SSH 종료 (Shutdown)
                         cmd = [
                             'ssh', 
                             '-o', 'StrictHostKeyChecking=no', 
