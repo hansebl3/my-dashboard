@@ -1,10 +1,24 @@
 import streamlit as st
 import pandas as pd
-from news_manager import NewsFetcher, NewsDatabase
+from modules.news_manager import NewsFetcher, NewsDatabase
 from modules.llm_manager import LLMManager
 import time
 import queue
 import threading
+
+# """
+# # News Reader Module
+# This Streamlit page provides a text-based news reader interface.
+# It supports:
+# - Fetching RSS feeds from various sources.
+# - Auto-summarizing articles using a local LLM (Ollama).
+# - Saving interesting articles to a database.
+# - Auto-refreshing the feed every 5 minutes.
+
+# Structure:
+# - **Sidebar**: Settings for source, AI model, and status checks.
+# - **Main Area**: List of news items with aggressive caching and threading for responsiveness.
+# """
 
 # Page Setup
 
@@ -219,6 +233,7 @@ if mode == "Live News":
     if 'current_source' not in st.session_state or st.session_state.current_source != source:
         st.session_state.news_items = fetcher.fetch_feeds(source)
         st.session_state.current_source = source
+        st.session_state.last_update = time.time()  # Initialize refresh timer
         # Source changed, stop old thread if any
         if 'stop_event' in st.session_state:
             st.session_state.stop_event.set()
@@ -280,7 +295,7 @@ if mode == "Live News":
         st.session_state.fetched_texts = {}
 
     # Display News List
-    @st.fragment(run_every=2 if st.session_state.get('auto_summary_enabled') else None)
+    @st.fragment(run_every=1)
     def render_news_list():
         if 'summaries' not in st.session_state:
             st.session_state.summaries = {}
@@ -293,6 +308,24 @@ if mode == "Live News":
                     st.session_state.summaries[link] = summary
             except queue.Empty:
                 pass
+        
+        # Auto-Refresh Logic (Every 5 minutes = 300s)
+        if 'last_update' in st.session_state:
+            elapsed = time.time() - st.session_state.last_update
+            remaining = max(0, 300 - int(elapsed))
+            
+            # Timer Display
+            mins, secs = divmod(remaining, 60)
+            timer_text = f"⏳ Refresh in: {mins:02d}:{secs:02d}"
+            
+            # Progress bar style or just text
+            st.caption(timer_text)
+            
+            if elapsed > 300:
+                 with st.spinner("Auto-refreshing feed..."):
+                     st.session_state.news_items = fetcher.fetch_feeds(st.session_state.current_source)
+                     st.session_state.last_update = time.time()
+                     st.rerun()
             
         for i, item in enumerate(st.session_state.news_items):
             # Create a container for each item
