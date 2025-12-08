@@ -1,4 +1,7 @@
 import feedparser
+import subprocess
+from modules.llm_manager import LLMManager
+from modules.metrics_manager import DataUsageTracker
 import requests
 from bs4 import BeautifulSoup
 import mysql.connector
@@ -44,15 +47,42 @@ class NewsDatabase:
                     summary TEXT,
                     content TEXT,
                     source VARCHAR(50),
+                    comment TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE KEY unique_link (link)
                 )
                 """
                 cursor.execute(create_table_query)
+                
+                # Migration: Add comment column if not exists
+                try:
+                    cursor.execute("SELECT comment FROM tb_news LIMIT 1")
+                except:
+                    logger.info("Adding comment column...")
+                    cursor.execute("ALTER TABLE tb_news ADD COLUMN comment TEXT")
+                    
                 conn.commit()
                 cursor.close()
+
+                # Cache Table
+                cursor = conn.cursor()
+                create_cache_table_query = """
+                CREATE TABLE IF NOT EXISTS tb_summary_cache (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    link_hash VARCHAR(255) NOT NULL, 
+                    link TEXT NOT NULL,
+                    summary TEXT,
+                    model VARCHAR(50),
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE KEY unique_link_hash (link_hash)
+                )
+                """
+                cursor.execute(create_cache_table_query)
+                conn.commit()
+                cursor.close()
+                
                 conn.close()
-                logger.info("Table tb_news checked/created.")
+                logger.info("Tables checked/created.")
         except Exception as e:
             logger.error(f"Table setup error: {e}")
 
@@ -68,11 +98,77 @@ class NewsDatabase:
             db_name = self.db_config['database']
             cursor.execute(f"CREATE DATABASE IF NOT EXISTS {db_name}")
             cursor.close()
+            conn.commit()
+            cursor.close()
             conn.close()
-            logger.info(f"Database {db_name} created.")
             return True
         except Exception as e:
-            logger.error(f"Database creation error: {e}")
+            logger.error(f"Save error: {e}")
+            return False
+
+    def get_summary_from_cache(self, link):
+        """Get cached summary for a link"""
+        import hashlib
+        link_hash = hashlib.md5(link.encode('utf-8')).hexdigest()
+        
+        conn = self.get_connection()
+        if not conn: return None
+        
+        try:
+            cursor = conn.cursor(dictionary=True)
+            cursor.execute("SELECT summary FROM tb_summary_cache WHERE link_hash = %s", (link_hash,))
+            result = cursor.fetchone()
+            cursor.close()
+            conn.close()
+            if result:
+                return result['summary']
+            return None
+        except Exception as e:
+            logger.error(f"Cache get error: {e}")
+            return None
+
+    def save_summary_to_cache(self, link, summary, model="unknown"):
+        """Save summary to cache"""
+        import hashlib
+        link_hash = hashlib.md5(link.encode('utf-8')).hexdigest()
+        
+        conn = self.get_connection()
+        if not conn: return False
+        
+        try:
+            cursor = conn.cursor()
+            # Upsert
+            query = """
+            INSERT INTO tb_summary_cache (link_hash, link, summary, model)
+            VALUES (%s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE summary=%s, model=%s, created_at=NOW()
+            """
+            cursor.execute(query, (link_hash, link, summary, model, summary, model))
+            conn.commit()
+            
+            # Simple cleanup: keep only last 100 entries
+            # This is a bit expensive to run every time, maybe random chance or dedicated cleanup
+            # User asked for recent 100, let's do it simply.
+            cursor.execute("SELECT count(*) FROM tb_summary_cache")
+            count = cursor.fetchone()[0]
+            if count > 100:
+                # Delete oldest, keeping 100
+                delete_query = """
+                DELETE FROM tb_summary_cache 
+                WHERE id NOT IN (
+                    SELECT id FROM (
+                        SELECT id FROM tb_summary_cache ORDER BY created_at DESC LIMIT 100
+                    ) foo
+                )
+                """
+                cursor.execute(delete_query)
+                conn.commit()
+
+            cursor.close()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"Cache save error: {e}")
             return False
 
     def get_connection(self):
@@ -96,25 +192,38 @@ class NewsDatabase:
         try:
             cursor = conn.cursor()
             query = """
-            INSERT INTO tb_news (title, link, published_date, summary, content, source)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE title=%s
+            INSERT INTO tb_news (title, link, published_date, summary, content, source, comment)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE 
+                title=%s, published_date=%s, summary=%s, content=%s, source=%s, comment=%s, created_at=NOW()
             """
-            # Duplicate key update to avoid errors, though usually we might skip
-            params = (
-                article['title'], article['link'], article['published'], 
-                article.get('summary', ''), article.get('content', ''), article['source'],
-                article['title']
+            values = (
+                article.get('title'),
+                article.get('link'),
+                article.get('published'),
+                article.get('summary', ''),
+                article.get('content', ''),
+                article.get('source', ''),
+                article.get('comment', ''),
+                
+                article.get('title'),
+                article.get('published'),
+                article.get('summary', ''),
+                article.get('content', ''),
+                article.get('source', ''),
+                article.get('comment', '')
             )
-            cursor.execute(query, params)
+            cursor.execute(query, values)
             conn.commit()
             return True
         except mysql.connector.Error as err:
             logger.error(f"Save Error: {err}")
             return False
         finally:
-            cursor.close()
-            conn.close()
+            if 'cursor' in locals() and cursor:
+                cursor.close()
+            if conn:
+                conn.close()
 
     def get_saved_articles(self):
         conn = self.get_connection()
@@ -134,7 +243,9 @@ class NewsFetcher:
         self.config = self._load_config(config_file)
         self.sources = {
             "Maeil Business": "https://www.mk.co.kr/rss/30000001/",
+            "GeekNews": "https://news.hada.io/rss/news",            
         }
+        self.llm_manager = LLMManager()
 
     def _load_config(self, config_file):
         if os.path.exists(config_file):
@@ -152,13 +263,18 @@ class NewsFetcher:
         try:
             resp = requests.get(url, headers=headers, timeout=10)
             resp.raise_for_status()
+            
+            # Track Usage
+            tracker = DataUsageTracker()
+            tracker.add_rx(len(resp.content))
+            
             feed = feedparser.parse(resp.content)
         except Exception as e:
             logger.error(f"Error fetching feed for {source_name}: {e}")
             return []
 
         entries = []
-        for entry in feed.entries[:20]: # Limit to 20
+        for entry in feed.entries[:10]: # Limit to 10
             entries.append({
                 'title': entry.title,
                 'link': entry.link,
@@ -192,6 +308,7 @@ class NewsFetcher:
                         real_url = links[0].get('href')
                         if real_url:
                              response = requests.get(real_url, headers=headers, timeout=10)
+                             DataUsageTracker().add_rx(len(response.content))
             
             soup = BeautifulSoup(response.content, 'html.parser')
             
@@ -225,38 +342,30 @@ class NewsFetcher:
             logger.error(f"Error fetching text: {e}")
             return f"Error fetching content: {e}"
 
-    def summarize_text(self, text):
-        # Local LLM (Ollama) configuration
-        # Assuming 2080ti host from config or hardcoded for now based on user context
-        # Better to get from config, but let's default to the known IP
-        ollama_host = "http://2080ti:11434"
-        model = "gpt-oss:20b" # Using one of the available models
-
-        if len(text) < 100:
+    def generate_summary(self, text, model, link=None, force_refresh=False):
+        """Generate summary with optional caching"""
+        # 1. Check Cache if link provided AND NOT forced
+        if link and not force_refresh:
+            db = NewsDatabase()
+            cached = db.get_summary_from_cache(link)
+            if cached:
+                return cached
+        
+        if not text or len(text) < 100:
             return "Text too short to summarize."
-
-        try:
-            payload = {
-                "model": model,
-                "prompt": f"Summarize the following text in 3 bullet point lines in Korean:\n\n{text[:3000]}",
-                "stream": False
-            }
-            logger.info(f"Sending request to Ollama: {model}")
-            response = requests.post(f"{ollama_host}/api/generate", json=payload, timeout=120) 
-            response.raise_for_status()
-            result = response.json()
-            return result.get("response", "No summary generated.")
-        except Exception as e:
-            logger.error(f"Ollama Error for {model}: {e}")
-            return f"Error generating summary: {e}"
+        
+        prompt = f"Summarize the following text in 3 bullet point lines in Korean:\n\n{text[:3000]}"
+        summary = self.llm_manager.generate_response(prompt, model)
+        
+        # 2. Save Cache if link provided (Update if exists)
+        if link and summary:
+            db = NewsDatabase()
+            db.save_summary_to_cache(link, summary, model)
+            
+        return summary
 
     def check_ollama_connection(self):
-        ollama_host = "http://2080ti:11434"
-        try:
-            resp = requests.get(f"{ollama_host}/api/tags", timeout=5)
-            if resp.status_code == 200:
-                models = [m['name'] for m in resp.json().get('models', [])]
-                return True, f"Connected. Available models: {', '.join(models)}"
-            return False, f"Status Code: {resp.status_code}"
-        except Exception as e:
-            return False, str(e)
+        return self.llm_manager.check_connection()
+
+    def get_gpu_info(self):
+        return self.llm_manager.get_gpu_info()

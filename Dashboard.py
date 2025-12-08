@@ -6,6 +6,14 @@ import os
 # 페이지 설정
 st.set_page_config(page_title="Ross Dashboard", layout="centered")
 
+# CSS for font size (Mobile optimization)
+st.markdown("""
+<style>
+h1 { font-size: 1.8rem !important; }
+h2 { font-size: 1.5rem !important; }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🖥️ Ross Dashboard!!")
 
 # CSS 스타일 로드
