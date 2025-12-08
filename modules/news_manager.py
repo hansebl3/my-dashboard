@@ -136,12 +136,16 @@ class NewsDatabase:
         
         try:
             cursor = conn.cursor(dictionary=True)
-            cursor.execute("SELECT summary FROM tb_summary_cache WHERE link_hash = %s", (link_hash,))
+            cursor.execute("SELECT summary, model, created_at FROM tb_summary_cache WHERE link_hash = %s", (link_hash,))
             result = cursor.fetchone()
             cursor.close()
             conn.close()
             if result:
-                return result['summary']
+                return {
+                    'summary': result['summary'],
+                    'model': result.get('model', 'unknown'),
+                    'created_at': result['created_at']
+                }
             return None
         except Exception as e:
             logger.error(f"Cache get error: {e}")
@@ -282,8 +286,9 @@ class NewsFetcher:
     def __init__(self, config_file='config.json'):
         self.config = self._load_config(config_file)
         self.sources = {
-            "Maeil Business": "https://www.mk.co.kr/rss/30000001/",
-            "GeekNews": "https://news.hada.io/rss/news",  
+            "매일경제": "https://www.mk.co.kr/rss/30000001/",
+            "한겨레": "https://www.hani.co.kr/rss",
+            "GeekNews": "https://news.hada.io/rss/news",
         }
         self.llm_manager = LLMManager()
 
@@ -377,6 +382,7 @@ class NewsFetcher:
                 script.decompose()
 
             # Improved Extraction Logic
+            # Improved Extraction Logic
             # 1. Look for itemprop="articleBody" (Common in modern news sites like MK)
             article_body = soup.find(attrs={"itemprop": "articleBody"})
             
@@ -386,15 +392,47 @@ class NewsFetcher:
             # 3. Look for specific classes (MK, etc.)
             class_candidates = soup.find_all('div', class_=lambda x: x and x in ['art_txt', 'view_txt', 'news_view'])
 
+            target_element = None
+            if article_body:
+                target_element = article_body
+            elif article_tag:
+                target_element = article_tag
+            elif class_candidates:
+                # Wrap multiple candidates in a dummy tag if needed, or just pick the first/largest
+                # For simplicity, if we found candidates, let's treat the first one as main or handle them list
+                # But creating a new soup object for them is cleaner
+                target_element = soup.new_tag('div')
+                for c in class_candidates:
+                    target_element.append(c)
+
             text_content = []
             
-            if article_body:
-                text_content.append(article_body.get_text(separator='\n').strip())
-            elif article_tag:
-                 text_content.append(article_tag.get_text(separator='\n').strip())
-            elif class_candidates:
-                 for c in class_candidates:
-                     text_content.append(c.get_text(separator='\n').strip())
+            if target_element:
+                # Pre-process Step: Convert HTML structures to Markdown-ish text
+                
+                # Handle Code Blocks (<pre>)
+                for pre in target_element.find_all('pre'):
+                    code_text = pre.get_text()
+                    # Replace content with fenced code block
+                    pre.string = f"\n```\n{code_text}\n```\n"
+                
+                # Handle Lists (<ul>, <ol>) - Simple approximation
+                for ul in target_element.find_all('ul'):
+                    for li in ul.find_all('li'):
+                        li.string = f"- {li.get_text()}"
+                
+                # Handle Headings (h1-h3) - Optional but nice
+                for i in range(1, 4):
+                    for h in target_element.find_all(f'h{i}'):
+                        h.string = f"\n{'#' * i} {h.get_text()}\n"
+                
+                text = target_element.get_text(separator='\n\n')
+                
+                # Cleanup excessive newlines
+                import re
+                text = re.sub(r'\n{3,}', '\n\n', text)
+                text_content.append(text.strip())
+
             else:
                 # Fallback to all p tags
                 paragraphs = soup.find_all('p')
@@ -426,35 +464,72 @@ class NewsFetcher:
     def generate_summary(self, text, model, link=None, force_refresh=False):
         """
         Generates a 3-bullet point summary using the LLM.
-        
-        Args:
-            text (str): The full text to summarize.
-            model (str): The LLM model name.
-            link (str, optional): Link to check/save cache.
-            force_refresh (bool): If True, ignores cache.
-            
         Returns:
-            str: The generated summary.
+            dict: { 'text': str, 'meta': dict }
         """
+        import time
+        
         # 1. Check Cache if link provided AND NOT forced
         if link and not force_refresh:
             db = NewsDatabase()
-            cached = db.get_summary_from_cache(link)
-            if cached:
-                return cached
+            cached_data = db.get_summary_from_cache(link)
+            if cached_data:
+                # cached_data is { 'summary', 'model', 'created_at' }
+                return {
+                    'text': cached_data['summary'],
+                    'meta': {
+                        'source': 'Cache',
+                        'model': cached_data['model'],
+                        'time': 'N/A',
+                        'host': 'DB'
+                    }
+                }
         
         if not text or len(text) < 100:
-            return "Text too short to summarize."
+            return {'text': "Text too short to summarize.", 'meta': {}}
         
-        prompt = f"Summarize the following text in 3 bullet point lines in Korean:\n\n{text[:3000]}"
+        # Stronger prompt for small models (0.5b)
+        prompt = f"""### System:
+You are a summary assistant. Output ONLY the summary in Korean. Do not say anything else.
+
+### Instruction:
+Summarize the content below into 3 bullet points using KOREAN ONLY.
+- NO Chinese. NO English.
+- NO introduction (e.g. "Here is the summary").
+- NO conclusion.
+- Format: "- Summary point..."
+
+### Content:
+{text[:3000]}
+
+### Response:
+"""
+        start_time = time.time()
         summary = self.llm_manager.generate_response(prompt, model)
+        end_time = time.time()
+        elapsed = round(end_time - start_time, 2)
+        
+        current_host = self.llm_manager.current_host
+        
+        # Append metadata footer to summary for persistence
+        # Using markdown italics for "small" feel
+        footer = f"\n\n*(⏱ {elapsed}s | {model} | {current_host})*"
+        full_summary = summary + footer
         
         # 2. Save Cache if link provided (Update if exists)
-        if link and summary:
+        if link and full_summary:
             db = NewsDatabase()
-            db.save_summary_to_cache(link, summary, model)
+            db.save_summary_to_cache(link, full_summary, model)
             
-        return summary
+        return {
+            'text': full_summary,
+            'meta': {
+                'source': 'Live',
+                'model': model,
+                'time': f"{elapsed}s",
+                'host': current_host
+            }
+        }
 
     def check_ollama_connection(self):
         """Pass-through to LLMManager check."""

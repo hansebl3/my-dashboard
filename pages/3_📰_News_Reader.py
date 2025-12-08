@@ -6,28 +6,12 @@ import time
 import queue
 import threading
 
-# """
-# # News Reader Module
-# This Streamlit page provides a text-based news reader interface.
-# It supports:
-# - Fetching RSS feeds from various sources.
-# - Auto-summarizing articles using a local LLM (Ollama).
-# - Saving interesting articles to a database.
-# - Auto-refreshing the feed every 5 minutes.
-
-# Structure:
-# - **Sidebar**: Settings for source, AI model, and status checks.
-# - **Main Area**: List of news items with aggressive caching and threading for responsiveness.
-# """
-
 # Page Setup
-
 st.set_page_config(page_title="News Reader", page_icon=None, layout="wide")
 
-# CSS to left-align buttons (specifically for news titles)
+# CSS to left-align buttons and adjust mobile headers
 st.markdown("""
 <style>
-/* Force left alignment and reduce font size for buttons (Article Titles) */
 div[data-testid="stMainBlockContainer"] .stButton button {
     justify-content: flex-start !important;
     text-align: left !important;
@@ -36,17 +20,10 @@ div[data-testid="stMainBlockContainer"] .stButton button {
     padding-bottom: 0.25rem !important;
     line-height: 1.4 !important;
 }
-
-/* Reduce main header sizes for mobile */
-h1 {
-    font-size: 1.8rem !important;
-}
-h2 {
-    font-size: 1.5rem !important;
-}
+h1 { font-size: 1.8rem !important; }
+h2 { font-size: 1.5rem !important; }
 </style>
 """, unsafe_allow_html=True)
-
 
 st.title("Text News Reader")
 
@@ -58,16 +35,11 @@ db = NewsDatabase()
 def auto_sum_worker(news_items, model, result_queue, stop_event):
     """Background thread to summarize news"""
     
-    # Check GPU availability once before loop
+    # Check GPU availability once before loop (loose check for remote/local)
     gpu_info = llm_manager.get_gpu_info()
-    if not gpu_info:
-        return # Skip if no GPU
+    if not gpu_info and "localhost" not in llm_manager.current_host:
+        return 
         
-    # We use a local fetcher instance to avoid any thread sharing issues with the main fetcher,
-    # though NewsFetcher seems mostly stateless except config.
-    # Actually, reusing the global 'fetcher' is fine if it's thread-safe.
-    # But `generate_summary` instantiates `NewsDatabase`.
-    
     for item in news_items:
         if stop_event.is_set():
             break
@@ -75,65 +47,105 @@ def auto_sum_worker(news_items, model, result_queue, stop_event):
         link = item['link']
         
         try:
-            # Fetch text (Network I/O)
-            # Use cached text from main thread? No, worker needs to fetch if missing.
-            # But the 'fetcher' instance is from main module import or passed arg?
-            # It's a global in this file.
-            
-            # Optimization: Check cache first via fetcher (which checks DB)
-            # But we need text for generation if cache miss.
-            # So:
-            # 1. Check DB cache (cheap)
-            db = NewsDatabase()
-            cached_sum = db.get_summary_from_cache(link)
-            if cached_sum:
-                result_queue.put((link, cached_sum))
+            # 1. Check DB cache first
+            db_local = NewsDatabase()
+            cached_data = db_local.get_summary_from_cache(link)
+            if cached_data:
+                # Wrap it to match generate_summary return format
+                formatted_result = {
+                    'text': cached_data['summary'],
+                    'meta': {
+                        'source': 'Cache',
+                        'time': 'N/A',
+                        'model': cached_data.get('model', 'Unknown'),
+                        'host': 'DB'
+                    }
+                }
+                result_queue.put((link, formatted_result))
                 continue
             
-            # 2. Fetch Text (expensive network)
+            # 2. Fetch Text
             text = fetcher.get_full_text(link)
             
-            # 3. Generate (via fetcher to reuse prompt logic)
-            # We pass link=None because we handle DB explicitly here to avoid re-instantiating DB? 
-            # Or just use fetcher's caching?
+            # 3. Generate {text, meta}
+            summary_data = fetcher.generate_summary(text, model, link=link)
             
-            # Let's use fetcher's caching logic! 
-            # But wait, if we use fetcher.generate_summary(link=link), it checks DB again (redundant but fast).
-            
-            summary = fetcher.generate_summary(text, model, link=link)
-            
-            if summary:
-                result_queue.put((link, summary))
+            if summary_data:
+                result_queue.put((link, summary_data))
             
             time.sleep(1) # Yield
         except Exception as e:
             print(f"Auto sum error: {e}")
 
-
-# Sidebar: Source Selection & Mode
+# Sidebar
 with st.sidebar:
     st.header("Settings")
     mode = st.radio("View Mode", ["Live News", "Saved News"])
     
     if mode == "Live News":
-        source = st.selectbox("Select Source", list(fetcher.sources.keys()))
+        # Source Selection
+        config = llm_manager.get_config()
+        default_source = config.get("default_source")
+        source_options = list(fetcher.sources.keys())
+        source_index = source_options.index(default_source) if default_source in source_options else 0
+
+        def on_source_change():
+             llm_manager.update_config("default_source", st.session_state.current_source_selection)
+
+        source = st.selectbox(
+            "Select Source", 
+            source_options, 
+            index=source_index, 
+            key="current_source_selection",
+            on_change=on_source_change
+        )
         
+        st.markdown("---")
+        st.caption("AI Configuration")
+        
+        # Auto Summary Toggle (Always Visible)
+        if 'auto_summary_enabled' not in st.session_state:
+            st.session_state.auto_summary_enabled = config.get("auto_summary_enabled", False)
+
+        def on_summary_toggle():
+             llm_manager.update_config("auto_summary_enabled", st.session_state.auto_summary_enabled)
+
+        st.toggle("Auto Summary", key="auto_summary_enabled", on_change=on_summary_toggle)
+
+        # Server Selection (Always Visible)
+        server_options = ["remote", "local"]
+        current_host_type = llm_manager.selected_host_type
+        host_index = server_options.index(current_host_type) if current_host_type in server_options else 0
+        
+        selected_server_label = st.radio(
+            "LLM Server",
+            server_options,
+            index=host_index,
+            format_func=lambda x: "Remote (2080ti)" if x == "remote" else "Local (Docker)",
+            key="selected_server_type",
+            disabled=not st.session_state.auto_summary_enabled
+        )
+        
+        if selected_server_label != current_host_type:
+             llm_manager.set_host_type(selected_server_label)
+             st.toast(f"Switched server to {selected_server_label}")
+             st.session_state.available_models = llm_manager.get_models()
+             st.rerun()
+
         # Model Selection
         if 'available_models' not in st.session_state:
              st.session_state.available_models = llm_manager.get_models()
         
-        # If models fetched successfully
         if st.session_state.available_models:
-            # Determine default index
-            config = llm_manager.get_config()
-            default_model = config.get("default_model")
+            # Determine default index based on CURRENT HOST context
+            default_model = llm_manager.get_context_default_model()
             
             default_index = 0
-            if default_model in st.session_state.available_models:
+            if default_model and default_model in st.session_state.available_models:
                 default_index = st.session_state.available_models.index(default_model)
 
             def on_model_change():
-                llm_manager.update_config("default_model", st.session_state.selected_model)
+                llm_manager.set_context_default_model(st.session_state.selected_model)
 
             selected_model = st.selectbox(
                 "AI Model", 
@@ -143,29 +155,19 @@ with st.sidebar:
                 on_change=on_model_change
             )
             
-            # Auto Summary Toggle
-            # Load initial state from config if not in session yet
-            if 'auto_summary_enabled' not in st.session_state:
-                st.session_state.auto_summary_enabled = config.get("auto_summary_enabled", False)
-
-            def on_summary_toggle():
-                 llm_manager.update_config("auto_summary_enabled", st.session_state.auto_summary_enabled)
-
-            # Just display the toggle here
-            st.toggle("Auto Summary", key="auto_summary_enabled", on_change=on_summary_toggle)
-            
-            # Queue Initialization
             if 'result_queue' not in st.session_state:
                 st.session_state.result_queue = queue.Queue()
-            
         else:
-            st.caption("AI Models: Not Connected")
+            st.warning("AI Models: Not Connected")
+            st.caption(f"Host: {llm_manager.current_host}")
+            if st.button("Retry Connection"):
+                st.session_state.available_models = llm_manager.get_models()
+                st.rerun()
             st.session_state.selected_model = None
 
         if st.button("Refresh Feed"):
             st.rerun()
             
-    
 
     st.markdown("---")
     st.caption("**AI Server Status**")
@@ -173,7 +175,6 @@ with st.sidebar:
     col_stat1, col_stat2 = st.columns([1,1])
     with col_stat1:
         if st.button("Check", key="check_ollama", use_container_width=True):
-            # Refresh models list when checked
             st.session_state.available_models = llm_manager.get_models()
             success, msg = llm_manager.check_connection()
             if success:
@@ -182,19 +183,19 @@ with st.sidebar:
                 st.toast(msg)
     
     with col_stat2:
-        st.write("") # Spacer
+        st.write("") 
 
-    # GPU Info (Moved up)
+    st.caption(f"**Host:** {llm_manager.current_host}")
+
     gpu_info = llm_manager.get_gpu_info()
     if gpu_info:
         count = len(gpu_info)
-        names = set(gpu_info) # Unique names
+        names = set(gpu_info)
         name_str = ", ".join(names)
         st.caption(f"**GPU:** {count} Cards Detected ({name_str})")
     else:
         st.caption("**GPU:** Not Detected (SSH Failed)")
 
-    # Data Usage Stats (Moved down)
     st.markdown("---")
     st.caption("**Server Data Usage (Today)**")
     
@@ -229,12 +230,10 @@ with st.sidebar:
 if mode == "Live News":
     st.header(f"Live Feed: {source}")
     
-    # Initialize session state for news if not present or source changed
     if 'current_source' not in st.session_state or st.session_state.current_source != source:
         st.session_state.news_items = fetcher.fetch_feeds(source)
         st.session_state.current_source = source
-        st.session_state.last_update = time.time()  # Initialize refresh timer
-        # Source changed, stop old thread if any
+        st.session_state.last_update = time.time()
         if 'stop_event' in st.session_state:
             st.session_state.stop_event.set()
             
@@ -243,37 +242,37 @@ if mode == "Live News":
         for item in st.session_state.news_items:
             cached = db.get_summary_from_cache(item['link'])
             if cached:
-                st.session_state.summaries[item['link']] = cached
+                # Normalize DB cache ({summary, model...}) to UI format ({text, meta...})
+                formatted_cached = {
+                    'text': cached['summary'],
+                    'meta': {
+                        'source': 'Cache',
+                        'time': 'N/A',
+                        'host': 'DB',
+                        'model': cached.get('model', 'Unknown')
+                    }
+                }
+                st.session_state.summaries[item['link']] = formatted_cached
 
     if not st.session_state.news_items:
         st.info("No news items found or unable to fetch.")
     
-    # Thread Management (Now that we have items)
+    # Thread Management
     auto_sum_on = st.session_state.get('auto_summary_enabled', False)
     selected_model = st.session_state.get('selected_model')
     
     if auto_sum_on and selected_model:
-        # Check if we need to start a thread
-        # 1. Thread not alive
-        # 2. OR Thread alive but probably done? (Hard to know, but if stop_event is set we should restart)
-        
         need_start = False
         if 'auto_thread' not in st.session_state:
             need_start = True
         elif not st.session_state.auto_thread.is_alive():
             need_start = True
         elif st.session_state.get('stop_event') and st.session_state.stop_event.is_set():
-             # Previous one was stopped, needed new one
              need_start = True
         
         if need_start:
              if 'summaries' not in st.session_state: st.session_state.summaries = {}
-             
-             items_to_process = [
-                 item for item in st.session_state.news_items 
-                 if item['link'] not in st.session_state.summaries
-             ]
-             
+             items_to_process = [i for i in st.session_state.news_items if i['link'] not in st.session_state.summaries]
              if items_to_process:
                  stop_event = threading.Event()
                  t = threading.Thread(
@@ -285,42 +284,29 @@ if mode == "Live News":
                  st.session_state.auto_thread = t
                  st.session_state.stop_event = stop_event
     else:
-        # If disabled, ensure stopped
         if 'stop_event' in st.session_state:
             st.session_state.stop_event.set()
     
-    
-    # Initialize dictionary to store fetched texts if not exists
     if 'fetched_texts' not in st.session_state:
         st.session_state.fetched_texts = {}
 
-    # Display News List
     @st.fragment(run_every=1)
     def render_news_list():
         if 'summaries' not in st.session_state:
             st.session_state.summaries = {}
 
-        # Poll Queue
         if 'result_queue' in st.session_state:
             try:
                 while True:
-                    link, summary = st.session_state.result_queue.get_nowait()
-                    st.session_state.summaries[link] = summary
+                    link, summary_data = st.session_state.result_queue.get_nowait()
+                    st.session_state.summaries[link] = summary_data
             except queue.Empty:
                 pass
         
-        # Auto-Refresh Logic (Every 5 minutes = 300s)
         if 'last_update' in st.session_state:
             elapsed = time.time() - st.session_state.last_update
             remaining = max(0, 300 - int(elapsed))
-            
-            # Timer Display
-            mins, secs = divmod(remaining, 60)
-            timer_text = f"⏳ Refresh in: {mins:02d}:{secs:02d}"
-            
-            # Progress bar style or just text
-            st.caption(timer_text)
-            
+            st.caption(f"⏳ Refresh in: {remaining//60:02d}:{remaining%60:02d}")
             if elapsed > 300:
                  with st.spinner("Auto-refreshing feed..."):
                      st.session_state.news_items = fetcher.fetch_feeds(st.session_state.current_source)
@@ -328,51 +314,47 @@ if mode == "Live News":
                      st.rerun()
             
         for i, item in enumerate(st.session_state.news_items):
-            # Create a container for each item
             with st.container():
-                # Use columns to mock a header
-                # Title as a button
                 if st.button(f"{item['title']}", key=f"title_btn_{i}", use_container_width=True):
-                    # Toggle selection
                     if st.session_state.get('expanded_id') == i:
                         st.session_state.expanded_id = None
                     else:
                          st.session_state.expanded_id = i
-                         # Auto-fetch text if not there
                          if item['link'] not in st.session_state.fetched_texts:
                              with st.spinner("Fetching full text..."):
                                  text = fetcher.get_full_text(item['link'])
                                  st.session_state.fetched_texts[item['link']] = text
                     st.rerun()
 
-                # Show Auto Summary if available (Indented)
+                # Show Summary
                 if item['link'] in st.session_state.summaries:
                     c_spacer, c_summary = st.columns([0.015, 0.985])
                     with c_summary:
-                        st.info(st.session_state.summaries[item['link']])
+                        data = st.session_state.summaries[item['link']]
+                        if isinstance(data, dict):
+                            text_content = data.get('text') or data.get('summary') or "Error: No text"
+                            st.info(text_content)
+                            # Meta is now embedded in text, so we don't need explicit caption
+                        else:
+                            st.info(data) # Legacy fallback
 
-                # Date snippet (Below)
                 st.caption(f"Published: {item['published']}")
                 
-                # If this item is expanded
                 if st.session_state.get('expanded_id') == i:
                     st.markdown("---")
-                    
                     full_text = st.session_state.fetched_texts.get(item['link'], "")
                     
-                    # Controls Row
                     col_regen, col_save_area = st.columns([1, 3])
-                    
                     with col_regen:
                          if st.button("Regen", key=f"sum_{i}"):
-                            with st.spinner(f"Asking Local LLM ({st.session_state.get('selected_model', 'Default')})..."):
+                            with st.spinner(f"Asking Local LLM..."):
                                 model_to_use = st.session_state.get('selected_model')
                                 if model_to_use:
-                                    summary = fetcher.generate_summary(full_text, model=model_to_use, link=item['link'], force_refresh=True)
-                                    st.session_state.summaries[item['link']] = summary
+                                    summary_data = fetcher.generate_summary(full_text, model=model_to_use, link=item['link'], force_refresh=True)
+                                    st.session_state.summaries[item['link']] = summary_data
                                     st.rerun()
                                 else:
-                                    st.error("No AI Model selected/available.")
+                                    st.error("No AI Model.")
 
                     with col_save_area:
                         c_comment, c_btn = st.columns([4, 1])
@@ -380,12 +362,15 @@ if mode == "Live News":
                             user_comment = st.text_input("Note", key=f"comment_{i}", placeholder="Comment...", label_visibility="collapsed")
                         with c_btn:
                             if st.button("Save", key=f"save_{i}"):
+                                sum_val = st.session_state.summaries.get(item['link'], "")
+                                sum_text = sum_val['text'] if isinstance(sum_val, dict) else sum_val
+                                
                                 article_data = {
                                     'title': item['title'],
                                     'link': item['link'],
                                     'published': item['published'],
                                     'source': item['source'],
-                                    'summary': st.session_state.summaries.get(item['link'], ""),
+                                    'summary': sum_text,
                                     'content': full_text,
                                     'comment': user_comment
                                 }
@@ -394,18 +379,13 @@ if mode == "Live News":
                                 else:
                                     st.error("Save failed.")
     
-                    # Show Content
                     st.write(full_text)
-                    
-                    # Original Link at Bottom
                     st.markdown(f"[Original Link]({item['link']})")
-                    
                     st.markdown("---")
-                    st.empty() # Spacer
+                    st.empty() 
     
     render_news_list()
 
-# Saved News Mode
 elif mode == "Saved News":
     st.header("Saved Articles")
     saved_items = db.get_saved_articles()
@@ -416,16 +396,10 @@ elif mode == "Saved News":
         for item in saved_items:
              with st.expander(f"{item['title']} (Saved: {item['created_at']})"):
                  st.markdown(f"**Source:** {item['source']}")
-                 
-                 # Show Comment
                  if item.get('comment'):
                      st.warning(f"**Note:** {item['comment']}")
-                 
-                 # Directly show content for saved items
                  st.markdown("**Summary:**")
                  st.info(item['summary'])
-                 
                  st.markdown("**Full Text:**")
-                 st.text(item['content']) # Use text or markdown
-                 
+                 st.text(item['content'])
                  st.markdown(f"[Original Link]({item['link']})")
