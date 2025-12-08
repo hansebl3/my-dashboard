@@ -16,10 +16,8 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # 소스 코드 복사
-# 소스 코드 복사
-COPY app.py .
-COPY pc_control.py .
-COPY config.json .
+# 소스 코드 복사 (모든 파일)
+COPY . .
 
 # 실행 명령어 (포트 8501)
-CMD ["streamlit", "run", "app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+CMD ["streamlit", "run", "Dashboard.py", "--server.port=8501", "--server.address=0.0.0.0"]
