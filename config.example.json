@@ -1,0 +1,18 @@
+{
+    "_comment": "This is a template. Copy to config.json and fill in values.",
+    "devices": [
+        {
+            "name": "Example PC",
+            "host": "192.168.1.100",
+            "mac": "00:00:00:00:00:00",
+            "ssh_user": "username"
+        }
+    ],
+    "news_db": {
+        "host": "localhost",
+        "user": "root",
+        "password": "YOUR_DB_PASSWORD_HERE",
+        "database": "news_db"
+    },
+    "openai_api_key": "YOUR_API_KEY_OR_EMPTY"
+}

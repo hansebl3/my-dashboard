@@ -1,0 +1,8 @@
+{
+    "default_model": "llama3.1",
+    "auto_summary_enabled": false,
+    "default_source": "GeekNews",
+    "selected_host_type": "local",
+    "default_model_local": "qwen2.5:0.5b",
+    "default_model_remote": "llama3.1"
+}
