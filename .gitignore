@@ -1,4 +1,16 @@
 __pycache__/
-pc_state.json
 *.pyc
 .DS_Store
+
+# Virtual Environment
+venv/
+env/
+
+# Configuration & Secrets
+config.json
+llm_config.json
+.env
+
+# Runtime Data
+data_usage.json
+pc_state.json

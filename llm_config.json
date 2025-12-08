@@ -1,1 +1,0 @@
-{"default_model": "qwen2.5:1.5b", "auto_summary_enabled": true, "default_source": "\ub9e4\uc77c\uacbd\uc81c", "selected_host_type": "local", "default_model_local": "qwen2.5:1.5b", "default_model_remote": "exaone3.5:7.8b"}
