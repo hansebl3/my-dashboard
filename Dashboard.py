@@ -16,6 +16,22 @@ h2 { font-size: 1.5rem !important; }
 
 st.title("🖥️ Ross Dashboard!!")
 
+# --- App Navigation Links ---
+st.markdown("### 🚀 Applications")
+col_nav1, col_nav2, col_nav3 = st.columns(3)
+
+with col_nav1:
+    st.link_button("📰 News Reader", "http://ross-server:8503")
+    
+with col_nav2:
+    st.link_button("📊 CSV Analyzer", "http://ross-server:8502")
+    
+with col_nav3:
+    st.link_button("🛠️ RAG Workbench", "http://ross-server:8504")
+
+st.markdown("---")
+
+
 # CSS 스타일 로드
 PCControl.load_css()
 
