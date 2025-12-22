@@ -478,7 +478,7 @@ class PCControl:
 
                         # 2. Reboot 실행
                         # Reboot 시 연결이 끊겨서 에러가 날 수 있으므로 예외 처리 완화
-                        cmd_reboot = base_cmd + ['sudo', 'reboot']
+                        cmd_reboot = cmd + ['sudo', 'reboot']
                         try:
                             subprocess.run(cmd_reboot, check=True, capture_output=True, timeout=10)
                         except subprocess.CalledProcessError:
