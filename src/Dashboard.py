@@ -37,6 +37,12 @@ with col_nav3:
 with col_nav4:
     st.link_button("📔 RAG Diary", "http://ross-server:8510", use_container_width=True)
 
+# Row 3
+col_nav5, col_nav6 = st.columns(2)
+
+with col_nav5:
+    st.link_button("📑 Doc Manager", "http://ross-server:8505", use_container_width=True)
+
 st.markdown("---")
 
 
