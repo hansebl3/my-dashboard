@@ -141,6 +141,10 @@ class PCControl:
                 return "WINDOWS"
             else:
                 # Banner exists but neither Ubuntu nor Windows explicitly
+                # Heuristic: If name contains "linux", assume Ubuntu
+                if "linux" in self.name.lower():
+                     return "UBUNTU"
+                
                 # User mentioned Windows SSH exists, so maybe it's just standard OpenSSH
                 # default to WINDOWS for non-Ubuntu SSH in this dual-boot context
                 return "WINDOWS"
@@ -170,11 +174,16 @@ class PCControl:
             
             # 서브넷 브로드캐스트 주소 계산
             try:
+                # 호스트가 Hostname일 경우 IP로 변환
+                try:
+                    target_ip = socket.gethostbyname(self.host)
+                except socket.gaierror:
+                    target_ip = self.host # 실패시 그대로 시도
+
                 # 호스트 IP를 기반으로 서브넷 브로드캐스트 주소 계산
-                host_ip = ipaddress.IPv4Address(self.host)
                 # 일반적인 서브넷 마스크 가정 (24비트 = /24)
                 # 실제 네트워크에 맞게 조정 필요할 수 있음
-                network = ipaddress.IPv4Network(f"{self.host}/24", strict=False)
+                network = ipaddress.IPv4Network(f"{target_ip}/24", strict=False)
                 broadcast_addr = str(network.broadcast_address)
             except (ValueError, ipaddress.AddressValueError):
                 # IP 주소 파싱 실패 시 기본 브로드캐스트 사용
@@ -189,36 +198,36 @@ class PCControl:
                 # 패킷을 여러 번 전송 (Ports 7 & 9)
                 ports = [7, 9]
                 for port in ports:
-                    for i in range(3):
+                    # 전송 횟수를 5회로 증가
+                    for i in range(5):
                         try:
                             # 서브넷 브로드캐스트로 전송
                             sock.sendto(data, (broadcast_addr, port))
-                            success_count += 1
                             # 전역 브로드캐스트도 전송
-                            if broadcast_addr != "255.255.255.255":
-                                sock.sendto(data, ("255.255.255.255", port))
-                            time.sleep(0.1)
+                            sock.sendto(data, ("255.255.255.255", port))
+                            success_count += 1
+                            time.sleep(0.05)
                         except socket.error:
                             pass
             
             # CLI 도구 사용 (wakeonlan 패키지가 설치되어 있으므로 활용)
             try:
-                # -i 옵션으로 브로드캐스트 주소 지정 가능 (wakeonlan -i 192.168.1.255 MAC)
-                cmd = ['wakeonlan', self.mac]
-                if broadcast_addr != "255.255.255.255":
-                     cmd.extend(['-i', broadcast_addr])
-                
+                # -i 옵션으로 브로드캐스트 주소 지정 가능
+                cmd = ['wakeonlan', '-i', broadcast_addr, self.mac]
                 subprocess.run(cmd, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                
+                # 전역 브로드캐스트로도 한 번 더
+                cmd_global = ['wakeonlan', '-i', '255.255.255.255', self.mac]
+                subprocess.run(cmd_global, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 success_count += 1
             except FileNotFoundError:
-                pass # wakeonlan not installed
-            
-
+                pass 
 
             if success_count == 0:
-                raise Exception(f"WOL 패킷 전송 실패: 소켓 오류 발생")
+                raise Exception(f"WOL 패킷 전송 실패: 모든 전송 시도가 실패했습니다.")
             
-            return True
+            # 디버그용 정보 반환 (또는 로깅)
+            return broadcast_addr
         except Exception as e:
             raise Exception(f"WOL 패킷 전송 실패: {str(e)}")
 
@@ -232,7 +241,6 @@ class PCControl:
         # 2. 세션 상태 초기화
         if self.key_last_check not in st.session_state:
             st.session_state[self.key_last_check] = 0
-            st.session_state[self.key_last_check] = 0
             st.session_state[self.key_last_status] = "OFFLINE" # Default to string status
         if self.key_confirm_off not in st.session_state:
             st.session_state[self.key_confirm_off] = False
@@ -240,16 +248,26 @@ class PCControl:
 
         now = time.time()
         
-        # 3. Automatic Status Check (Every 3s via fragment, but strictly check interval to avoid redundant calls if multiple re-runs happen)
-        # fragment run_every takes care of the trigger, but we should just check.
-        status = self.check_status()
-        st.session_state[self.key_last_status] = status
-        st.session_state[self.key_last_check] = now
+        # 3. Automatic Status Check (Throttled, but more frequent during actions)
+        last_check_time = st.session_state.get(self.key_last_check, 0)
+        
+        # Check interval: 
+        # - 15s if idle
+        # - 5s if in an active action (booting/shutdown)
+        # - 30s if failed previously (to avoid constant lag)
+        check_interval = 15
+        if current_action is not None:
+            check_interval = 5
+        
+        if (now - last_check_time > check_interval):
+            status = self.check_status()
+            st.session_state[self.key_last_status] = status
+            st.session_state[self.key_last_check] = now
+        else:
+            status = st.session_state[self.key_last_status]
         
         # Header (No Refresh Button needed, auto-refresh is active)
         st.subheader(f"{self.name} Power Status")
-        # Optional: Add a small indicator that it's live
-        # st.caption(f"Last updated: {time.strftime('%H:%M:%S')}")
 
         # Display Status with Icons
         if status == "UBUNTU":
@@ -264,6 +282,11 @@ class PCControl:
         else:
             st.error("OFFLINE 🔴")
             is_online = False
+        
+        # 4. Status Indicator (Small debug info)
+        if current_action:
+            st.caption(f"Action in progress: {current_action.upper()}... (Current Status: {status})")
+
 
         # 5. 액션 로직 처리
         if current_action == "booting":
