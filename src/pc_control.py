@@ -21,6 +21,7 @@ class PCControl:
         self.key_last_check = f"{self.name}_last_check"
         self.key_last_status = f"{self.name}_last_status"
         self.key_confirm_off = f"{self.name}_confirm_off"
+        self.key_confirm_ai_stop = f"{self.name}_confirm_ai_stop"
 
     @staticmethod
     def load_css():
@@ -154,6 +155,60 @@ class PCControl:
              return "WINDOWS"
 
         return "OFFLINE"
+
+    def _get_ssh_command(self, status):
+        """SSH 기본 명령어 구성 (키 자동 찾기 포함)"""
+        ssh_key_paths = [
+            os.path.expanduser('~/.ssh/id_ed25519'),
+            os.path.expanduser('~/.ssh/id_rsa'),
+            os.path.expanduser('~/.ssh/id_ecdsa'),
+        ]
+        
+        ssh_key = None
+        for key_path in ssh_key_paths:
+            if os.path.exists(key_path) and os.access(key_path, os.R_OK):
+                ssh_key = key_path
+                break
+        
+        cmd = [
+            'ssh', 
+            '-o', 'StrictHostKeyChecking=no', 
+            '-o', 'UserKnownHostsFile=/dev/null',
+            '-o', 'ConnectTimeout=5',
+        ]
+        
+        if ssh_key:
+            cmd.extend(['-i', ssh_key])
+            
+        return cmd
+
+    def run_ssh_cmd(self, cmd_text, status):
+        """SSH 명령어 실행 (Interactive Shell 사용 - Alias 지원용)"""
+        try:
+            cmd = self._get_ssh_command(status)
+            
+            # Ubuntu/Linux일 경우 TTY(-t)와 interactive shell(-i)을 사용하여 alias를 로드함
+            # Windows가 아닐 경우에만 -t 추가
+            if status != "WINDOWS":
+                cmd.append('-t')
+            
+            # .bashrc의 alias를 인식하기 위해 interactive shell 사용
+            # 혹은 shopt -s expand_aliases; source ~/.bashrc; 를 직접 사용할 수도 있음
+            full_cmd = f"bash -i -c '{cmd_text}'"
+            
+            cmd.extend(['-l', self.ssh_user, self.host, full_cmd])
+            
+            # stdout/stderr를 캡처하여 에러 시 도움을 줌
+            subprocess.run(cmd, check=True, capture_output=True, timeout=15)
+            st.toast(f"Command '{cmd_text}' sent successfully!", icon="✅")
+            return True
+        except subprocess.CalledProcessError as e:
+            error_msg = e.stderr.decode().strip() if e.stderr else str(e)
+            st.error(f"Failed to run '{cmd_text}': {error_msg}")
+            return False
+        except Exception as e:
+            st.error(f"Error executing '{cmd_text}': {e}")
+            return False
 
     def send_magic_packet(self):
         """Wake-on-LAN의 순수 파이썬 구현 (개선 버전)"""
@@ -429,11 +484,11 @@ class PCControl:
                             st.error(f"Failed: {e}")
 
                 with c2:
-                    if st.button("❌ No", key=f"{self.name}_no_off", use_container_width=True):
                         st.session_state[self.key_confirm_off] = False
                         st.rerun()
 
-                        # 켜져있으면 강조(primary), 꺼져있으면 기본(secondary)
+        with col3:
+            # 켜져있으면 강조(primary), 꺼져있으면 기본(secondary)
             # Windows 상태라도 재부팅 용도로 Win Boot 버튼 활성화
             is_win_boot_disabled = is_disabled 
             
@@ -524,5 +579,26 @@ class PCControl:
                         st.error(f"Failed: {e}")
                 else:
                     st.warning("Device is offline.")
+
+        # --- AI Server Control Section (2080linux Only) ---
+        if self.name.lower() == "2080linux":
+            st.markdown("---")
+            st.markdown("🤖 **AI Server Control**")
+            ai_col1, ai_col2, ai_col3 = st.columns(3)
+            
+            # AI 버튼들은 온라인일 때만 활성화
+            ai_disabled = not is_online
+            
+            with ai_col1:
+                if st.button("💬 Text AI", key=f"{self.name}_ai_text", use_container_width=True, help="Run ai-text via SSH", disabled=ai_disabled):
+                    self.run_ssh_cmd("ai-text", status)
+            
+            with ai_col2:
+                if st.button("👁️ Vision AI", key=f"{self.name}_ai_vision", use_container_width=True, help="Run ai-vision via SSH", disabled=ai_disabled):
+                    self.run_ssh_cmd("ai-vision", status)
+            
+            with ai_col3:
+                if st.button("🛑 Stop AI", key=f"{self.name}_ai_stop", use_container_width=True, type="secondary", help="Run ai-stop via SSH", disabled=ai_disabled):
+                    self.run_ssh_cmd("ai-stop", status)
 
 

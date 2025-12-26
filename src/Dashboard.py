@@ -73,3 +73,7 @@ for device in devices:
     )
     pc.render_ui()
     st.markdown("---") # 구분선 추가
+
+# Open Web UI Shortcut
+st.markdown("### 🌐 AI Web Services")
+st.link_button("🚀 Open Web UI", "http://ross-server:3000", use_container_width=True)
